@@ -149,8 +149,10 @@ rateit-her/
 │   ├── en.json                  # 後続対応
 │   └── zh.json                  # 後続対応
 ├── lib/
-│   ├── supabase/                # DBクライアント・型定義
-│   └── wikipedia/               # Wikipedia APIクライアント
+│   ├── db/                      # DBクライアント・クエリ・スキーマ
+│   ├── actions/                 # Server Actions
+│   ├── wikipedia/               # Wikipedia APIクライアント
+│   └── session.ts               # セッションID ユーティリティ
 └── components/
     ├── ranking/
     │   ├── RankingTabs.tsx      # 全体/Cute/Sexy/Coolタブ
