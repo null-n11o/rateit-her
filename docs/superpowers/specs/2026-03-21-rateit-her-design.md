@@ -43,6 +43,9 @@ RateIt Her（UGC型評価サイト）
 ユーザー登録・ログイン不要。個人情報ゼロ。
 
 - 初回アクセス時にサーバーがUUID v4を生成し、`httpOnly` Cookie（`session_id`）として発行
+- セッション発行は **`middleware.ts`** で行う（全リクエストに先行して実行されるため確実）
+- `middleware.ts` は `next-intl` の `createMiddleware` と chain する構成とする。実行順序は「セッション発行 → next-intl ロケール検出」の順
+- セッション発行は middleware の `response` オブジェクトに Set-Cookie するため、同一リクエスト内の SSR コンポーネントでは `cookies()` から即座に読み取れる
 - Cookie の有効期限は1年（`maxAge: 365 * 24 * 60 * 60`）
 - 以降のリクエストはすべてこの `session_id` で識別
 - Cookie 削除・別デバイスでは別セッション扱い（評価履歴は引き継がれない）
@@ -91,20 +94,38 @@ SELECT
   c.name,
   c.category,
   c.image_url,
-  ROUND(AVG(e.score), 2)                            AS avg_score,
-  COUNT(e.id)                                        AS vote_count,
-  MODE() WITHIN GROUP (ORDER BY e.type_vote)         AS dominant_type
+  ROUND(AVG(e.score), 2)                                          AS avg_score,
+  COUNT(e.id)                                                      AS vote_count,
+  MODE() WITHIN GROUP (ORDER BY e.type_vote)                       AS dominant_type,
+  ROUND(AVG(e.score) FILTER (WHERE e.type_vote = 'cute'), 2)      AS avg_score_cute,
+  COUNT(e.id)       FILTER (WHERE e.type_vote = 'cute')           AS vote_count_cute,
+  ROUND(AVG(e.score) FILTER (WHERE e.type_vote = 'sexy'), 2)      AS avg_score_sexy,
+  COUNT(e.id)       FILTER (WHERE e.type_vote = 'sexy')           AS vote_count_sexy,
+  ROUND(AVG(e.score) FILTER (WHERE e.type_vote = 'cool'), 2)      AS avg_score_cool,
+  COUNT(e.id)       FILTER (WHERE e.type_vote = 'cool')           AS vote_count_cool
 FROM celebrities c
 LEFT JOIN evaluations e ON e.celebrity_id = c.id
 GROUP BY c.id;
 ```
 
-**設計上のポイント:**
+**ランキングタブのクエリ方針:**
+- 「全体」タブ → `avg_score` で ORDER BY（`vote_count = 0` の芸能人は除外）
+- 「Cute」タブ → `avg_score_cute` で ORDER BY（`vote_count_cute = 0` の芸能人は除外）
+- 「Sexy」タブ → `avg_score_sexy` で ORDER BY（`vote_count_sexy = 0` の芸能人は除外）
+- 「Cool」タブ → `avg_score_cool` で ORDER BY（`vote_count_cool = 0` の芸能人は除外）
+- 0票の芸能人はランキングに表示しない（`WHERE vote_count > 0` でフィルタ）
+- ランキングページは各タブ上位50件を表示。芸能人一覧ページは全件表示（MVP初期は〜100件を想定）
+
+**dominant_type（公式タイプ）の同数時の挙動:**
+- `MODE()` は同数の場合、文字列のアルファベット順（`cool < cute < sexy`）で先頭を返す
+- MVP ではこの挙動をそのまま採用する（同数時に複数タイプを表示する実装はしない）
+
+**その他設計上のポイント:**
 - `users` テーブルは不要（匿名セッションID方式のため）
 - `UNIQUE(session_id, celebrity_id)` で1セッション1芸能人1評価を保証
-- 評価の変更は UPSERT（ON CONFLICT DO UPDATE）で対応
+- 評価の変更は UPSERT（`ON CONFLICT DO UPDATE SET score=?, type_vote=?, updated_at=NOW()`）で対応
+- `updated_at` は UPSERT クエリで明示的に `NOW()` をセット（PostgreSQL は自動更新しないため）。後続対応として `BEFORE UPDATE` トリガーを追加予定
 - `comment` カラムはMVPスコープ外（後続対応）
-- ランキング集計は `celebrity_rankings` VIEWで事前集計しクエリを軽量化
 
 ---
 
@@ -112,11 +133,9 @@ GROUP BY c.id;
 
 ```
 rateit-her/
+├── middleware.ts                # セッションID発行・ロケール検出
 ├── app/
 │   └── [locale]/               # ja（デフォルト）/ en / zh（将来）
-│       ├── (auth)/
-│       │   ├── login/           # 将来拡張用（MVP時点では不使用）
-│       │   └── register/
 │       ├── (main)/
 │       │   ├── page.tsx         # トップ・ランキング
 │       │   ├── celebrities/
@@ -152,7 +171,7 @@ rateit-her/
 | URL | 内容 | レンダリング |
 |-----|------|------------|
 | `/` | トップ・ランキング（全体/Cute/Sexy/Coolタブ） | SSR |
-| `/celebrities` | 芸能人一覧・名前検索 | SSR |
+| `/celebrities?q=` | 芸能人一覧・名前検索（URLクエリパラメータ `?q=` を SSR で受け取り Supabase の `ilike` でフィルタ） | SSR |
 | `/celebrities/[id]` | 芸能人プロフィール・評価フォーム | SSR + Client |
 | `/profile` | ユーザープロフィール・評価履歴 | SSR（session_id必須） |
 
@@ -173,6 +192,48 @@ rateit-her/
 - トップページにタブ4つ（全体 / Cute / Sexy / Cool）
 - 各タブ内で総合スコア平均が高い順に表示
 - 芸能人ページでは全ユーザー平均評価・自セッション評価をそれぞれ表示
+
+---
+
+## 評価送信 Server Action
+
+評価フォーム送信は Next.js Server Action として実装する。DB に直接書き込む前に以下のバリデーションを行う：
+
+```ts
+// lib/actions/evaluate.ts
+const schema = z.object({
+  celebrity_id: z.number().int().positive(),
+  type_vote:    z.enum(['cute', 'sexy', 'cool']),
+  score:        z.number().min(1.0).max(5.0).multipleOf(0.1),
+});
+```
+
+- `session_id` は Cookie から取得（クライアントからは受け取らない）
+- `score` の小数バリデーションは浮動小数点誤差を避けるため `Math.round(score * 10)` で整数変換してから範囲チェックを行う
+- バリデーション失敗時は 400 相当のエラーをフォームに返す
+- 成功時は UPSERT を実行し、`updated_at = NOW()` を明示的にセット
+
+---
+
+## Wikipedia API 連携
+
+- 芸能人データは **管理者がSupabase Studioで直接登録する際に取得・保存**する
+- `wikipedia_slug` を元に `https://ja.wikipedia.org/api/rest_v1/page/summary/{slug}` を呼び出す
+- 取得した `description`（抜粋）と `thumbnail.source`（画像URL）を `celebrities` テーブルに保存
+- APIはビルド時・リクエスト時には呼ばない（DB保存済みのデータを参照するのみ）
+- 画像が取得できない場合は `image_url = NULL`、UI側でプレースホルダーを表示
+- 芸能人登録時は `scripts/seed-celebrity.ts` を CLI から実行する（Supabase Studio は手入力UIのため API 呼び出し不可）。スクリプトは `wikipedia_slug` を引数に受け取り、Wikipedia API から取得した `description` と `image_url` を自動入力してDBに保存する
+  - 使用例: `npx tsx scripts/seed-celebrity.ts --slug "松本まりか" --category actress`
+
+---
+
+## レート制限・スパム対策
+
+MVP での最低限の対策として、Vercel Edge の rate limit を活用する：
+
+- `/api/` および Server Action エンドポイントに対し、同一IP から **1分間に30リクエスト** を超えた場合は 429 を返す
+- MVPは **`@upstash/ratelimit`**（Upstash Redis 無料枠）を使用する（Vercel Pro 不要で導入できるため）
+- DB レベルの UNIQUE 制約により、同一セッションの重複投票はそもそも防止されている
 
 ---
 
@@ -215,9 +276,25 @@ rateit-her/
 
 ---
 
+## 環境変数
+
+| 変数名 | 用途 | 公開範囲 |
+|--------|------|---------|
+| `SUPABASE_URL` | SupabaseプロジェクトURL | サーバーのみ |
+| `SUPABASE_ANON_KEY` | Supabase匿名APIキー | サーバーのみ |
+| `NEXT_PUBLIC_SITE_URL` | Vercel デプロイURL（OGPなどで使用） | 公開可 |
+
+---
+
 ## 対象芸能人カテゴリ
 
 - 日本人女優（`actress`）
 - ハリウッド女優（`actress`）
 - モデル（`model`）
 - AV女優（`av_actress`）
+
+---
+
+## プロフィールページ：空状態
+
+評価が0件の場合は「まだ評価した芸能人がいません。ランキングから探してみましょう」などの誘導メッセージとランキングページへのリンクを表示する。
