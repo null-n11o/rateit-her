@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS evaluations (
 -- インデックス（検索・ランキングの高速化）
 CREATE INDEX IF NOT EXISTS idx_evaluations_celebrity_id ON evaluations(celebrity_id);
 CREATE INDEX IF NOT EXISTS idx_celebrities_name ON celebrities(name);
+CREATE INDEX IF NOT EXISTS idx_evaluations_session_id ON evaluations(session_id);
 
 -- ランキング集計 VIEW
 CREATE OR REPLACE VIEW celebrity_rankings AS
