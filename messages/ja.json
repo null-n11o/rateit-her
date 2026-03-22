@@ -1,0 +1,48 @@
+{
+  "nav": {
+    "home": "ホーム",
+    "celebrities": "芸能人一覧",
+    "profile": "マイページ"
+  },
+  "ranking": {
+    "title": "ランキング",
+    "tabs": {
+      "all": "総合",
+      "cute": "Cute",
+      "sexy": "Sexy",
+      "cool": "Cool"
+    },
+    "rank": "{rank}位",
+    "votes": "{count}票",
+    "noData": "まだ評価がありません"
+  },
+  "celebrity": {
+    "evaluate": "評価する",
+    "yourRating": "あなたの評価",
+    "avgRating": "平均評価",
+    "officialType": "公式タイプ",
+    "typeVote": {
+      "cute": "Cute",
+      "sexy": "Sexy",
+      "cool": "Cool"
+    },
+    "submit": "評価を送信",
+    "updated": "評価を更新しました"
+  },
+  "celebrities": {
+    "title": "芸能人一覧",
+    "searchPlaceholder": "名前で検索...",
+    "noResults": "該当する芸能人が見つかりません"
+  },
+  "profile": {
+    "title": "マイページ",
+    "top5": "あなたのTOP5",
+    "history": "評価履歴",
+    "empty": "まだ評価した芸能人がいません。ランキングから探してみましょう",
+    "goToRanking": "ランキングへ"
+  },
+  "errors": {
+    "notFound": "ページが見つかりません",
+    "serverError": "エラーが発生しました。しばらく経ってから再試行してください"
+  }
+}
